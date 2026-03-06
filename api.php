@@ -63,7 +63,7 @@ if ($action === 'feed') {
     $stmt->execute([':since' => $since]);
     $entries = $stmt->fetchAll(PDO::FETCH_ASSOC);
     attachFeed($entries, $feeds);
-    echo json_encode(['entries' => $entries]);
+    echo json_encode(['entries' => $entries], JSON_INVALID_UTF8_SUBSTITUTE);
 
 } elseif ($action === 'more') {
     $last_date = filter_input(INPUT_GET, 'last_date', FILTER_VALIDATE_INT);
@@ -87,7 +87,7 @@ if ($action === 'feed') {
     $stmt->execute();
     $entries = $stmt->fetchAll(PDO::FETCH_ASSOC);
     attachFeed($entries, $feeds);
-    echo json_encode(['entries' => $entries]);
+    echo json_encode(['entries' => $entries], JSON_INVALID_UTF8_SUBSTITUTE);
 
 } else {
     http_response_code(400);
