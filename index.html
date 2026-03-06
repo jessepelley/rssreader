@@ -89,6 +89,8 @@
     text-decoration: underline;
 }
 
+#search-input { font-size: 16px; }
+
 #ptr-indicator {
     position: fixed;
     top: 0; left: 0; right: 0;
@@ -104,6 +106,33 @@
     z-index: 1001;
     pointer-events: none;
 }
+
+#fab-container {
+    position: fixed;
+    bottom: 24px;
+    right: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    z-index: 1000;
+}
+
+.fab-btn {
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    border: 1px solid rgba(0,0,0,0.12);
+    background: #fff;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+    font-size: 1.4rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    -webkit-tap-highlight-color: transparent;
+}
+
+@media (min-width: 841px) { #fab-container { display: none; } }
 </style>
 </head>
 
@@ -186,8 +215,9 @@ function processContent(content, feedName) {
                 .replace(/&rdquo;|&#8221;|&#x201[Dd];/g, '\u201d')
                 .replace(/&lsquo;|&#8216;|&#x2018;/g,    '\u2018')
                 .replace(/&rsquo;|&#8217;|&#x2019;/g,    '\u2019');
-            // Split on smart-quoted spans (\u201c…\u201d or \u2018…\u2019)
-            const segs = textPart.split(/([\u201c\u2018][^\u201c\u2018\u201d\u2019]+?[\u201d\u2019])/u);
+            // Split on quoted spans — smart quotes (\u201c…\u201d, \u2018…\u2019)
+            // OR plain ASCII double-quotes (Fox News RSS uses both styles).
+            const segs = textPart.split(/([\u201c\u2018"][^\u201c\u2018\u201d\u2019"]+?[\u201d\u2019"])/u);
             return segs.map((seg, i) => {
                 if (i % 2 === 1) return seg; // quoted — leave as-is
                 return seg.trim() ? '<span class="greyed-text">' + seg + '</span>' : seg;
@@ -236,13 +266,8 @@ function renderEntry(entry) {
         } catch (_) {}
     }
 
-    // Build searchable text: feed name + headline + plain-text content
-    const _tmp = document.createElement('div');
-    _tmp.innerHTML = entry.content || '';
-    const searchData = `${entry.feed_name || ''} ${htmlDecode(title)} ${_tmp.textContent || ''}`;
-
     return `
-<div class="mb-3" data-search="${escHtml(searchData)}">
+<div class="mb-3">
     <div class="headline fw-semibold" data-target="a${id}">
         ${faviconImg}
         <span class="headline-text">
@@ -476,13 +501,66 @@ function searchOtherSources(button) {
 }
 
 // -------- SEARCH --------
-function filterEntries(query) {
-    const q = query.trim().toLowerCase();
-    document.querySelectorAll('#feed-container > .mb-3').forEach(el => {
-        el.style.display = (!q || (el.dataset.search || '').toLowerCase().includes(q)) ? '' : 'none';
-    });
-    const lb = document.getElementById('load-more-btn');
-    if (lb) lb.style.display = q ? 'none' : '';
+let _searchSnapshot = null;
+let _searchTimer    = null;
+
+async function filterEntries(query) {
+    const q         = query.trim();
+    const container = document.getElementById('feed-container');
+    const lb        = document.getElementById('load-more-btn');
+    clearTimeout(_searchTimer);
+
+    if (!q) {
+        if (_searchSnapshot) {
+            container.innerHTML = _searchSnapshot.html;
+            attachHeadlineHandlers(container);
+            if (lb && _searchSnapshot.lbVisible) lb.style.display = '';
+            _searchSnapshot = null;
+        }
+        return;
+    }
+
+    // Save original view before the first search
+    if (!_searchSnapshot) {
+        _searchSnapshot = {
+            html:      container.innerHTML,
+            lbVisible: lb ? lb.style.display !== 'none' : false,
+        };
+    }
+    if (lb) lb.style.display = 'none';
+
+    _searchTimer = setTimeout(async () => {
+        container.innerHTML = '<p class="text-body-secondary">Searching\u2026</p>';
+        try {
+            const res  = await fetch(`${API_BASE}?action=search&q=${encodeURIComponent(q)}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+
+            container.innerHTML = '';
+            if (!data.entries || data.entries.length === 0) {
+                container.innerHTML = `<p class="text-body-secondary">No results for \u201c${escHtml(q)}\u201d.</p>`;
+                return;
+            }
+            const tmp  = document.createElement('div');
+            const seen = new Set();
+            data.entries.forEach(entry => {
+                const t = (entry.title || '').trim();
+                if (seen.has(t)) return;
+                seen.add(t);
+                tmp.insertAdjacentHTML('beforeend', renderEntry(entry));
+            });
+            attachHeadlineHandlers(tmp);
+            while (tmp.firstChild) container.appendChild(tmp.firstChild);
+        } catch (err) {
+            container.innerHTML = `<p class="text-danger">Search failed: ${escHtml(err.message)}</p>`;
+        }
+    }, 350);
+}
+
+function focusSearch() {
+    const inp = document.getElementById('search-input');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    setTimeout(() => inp.focus(), 300);
 }
 
 // -------- PULL-TO-REFRESH (iOS standalone) --------
@@ -493,7 +571,11 @@ function filterEntries(query) {
     let startY = 0, active = false;
 
     document.addEventListener('touchstart', e => {
-        if (window.scrollY === 0) { startY = e.touches[0].pageY; active = true; }
+        if (window.scrollY === 0) {
+            startY = e.touches[0].pageY;
+            active = true;
+            ind.style.transition = 'none'; // disable during drag for instant response
+        }
     }, { passive: true });
 
     document.addEventListener('touchmove', e => {
@@ -509,13 +591,33 @@ function filterEntries(query) {
         if (!active) return;
         active = false;
         const dy = e.changedTouches[0].pageY - startY;
+        ind.style.transition = ''; // re-enable for snap-back animation
         ind.style.transform = `translateY(-${H}px)`;
         if (dy >= THRESHOLD) { ind.textContent = 'Refreshing\u2026'; location.reload(); }
+    });
+})();
+
+// -------- AUTO-REFRESH ON RESUME --------
+(function setupAutoRefresh() {
+    let hiddenAt = null;
+    const THRESHOLD = 5 * 60 * 1000; // 5 minutes
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            hiddenAt = Date.now();
+        } else if (hiddenAt !== null) {
+            if (Date.now() - hiddenAt >= THRESHOLD) location.reload();
+            hiddenAt = null;
+        }
     });
 })();
 </script>
 
 <div id="ptr-indicator" aria-hidden="true">Pull down to refresh</div>
+
+<div id="fab-container">
+    <button class="fab-btn" onclick="focusSearch()" title="Search" aria-label="Search">&#x2315;</button>
+    <button class="fab-btn" onclick="location.reload()" title="Refresh" aria-label="Refresh">&#x21BA;</button>
+</div>
 
 </body>
 </html>

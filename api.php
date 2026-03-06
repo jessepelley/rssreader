@@ -89,6 +89,22 @@ if ($action === 'feed') {
     attachFeed($entries, $feeds);
     echo json_encode(['entries' => $entries], JSON_INVALID_UTF8_SUBSTITUTE);
 
+} elseif ($action === 'search') {
+    $raw = trim($_GET['q'] ?? '');
+    if (strlen($raw) < 2) { echo json_encode(['entries' => []]); exit; }
+    $q    = '%' . $raw . '%';
+    $stmt = $db->prepare('
+        SELECT e.* FROM entry e
+        INNER JOIN feed f ON e.id_feed = f.id
+        WHERE e.title LIKE :q OR e.content LIKE :q OR f.name LIKE :q
+        ORDER BY e.date DESC
+        LIMIT 50
+    ');
+    $stmt->execute([':q' => $q]);
+    $entries = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    attachFeed($entries, $feeds);
+    echo json_encode(['entries' => $entries], JSON_INVALID_UTF8_SUBSTITUTE);
+
 } else {
     http_response_code(400);
     echo json_encode(['error' => 'Unknown action']);
