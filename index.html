@@ -88,6 +88,22 @@
     color: #0d6efd;
     text-decoration: underline;
 }
+
+#ptr-indicator {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+    color: #666;
+    background: #fff;
+    transform: translateY(-48px);
+    transition: transform 0.15s ease;
+    z-index: 1001;
+    pointer-events: none;
+}
 </style>
 </head>
 
@@ -96,7 +112,12 @@
 <nav class="navbar navbar-light border-bottom mb-3 position-sticky" style="top: 0; background-color: #fff; z-index: 1000;">
     <div class="container d-flex justify-content-between align-items-center">
         <a class="navbar-brand" href="/">RSS Reader</a>
-        <a class="nav-link px-2 text-body-secondary" href="https://jjjp.ca/">Home</a>
+        <input type="search" id="search-input"
+               class="form-control form-control-sm mx-2"
+               placeholder="Search&hellip;"
+               oninput="filterEntries(this.value)"
+               style="max-width:180px;">
+        <a class="nav-link px-2 text-body-secondary flex-shrink-0" href="https://jjjp.ca/">Home</a>
     </div>
 </nav>
 
@@ -158,8 +179,15 @@ function processContent(content, feedName) {
         const parts = content.split(/(<a\b[^>]*>[\s\S]*?<\/a>|<[^>]+>)/);
         const result = parts.map(part => {
             if (part.startsWith('<')) return part; // HTML tag — pass through
+            // Normalise HTML quote entities to Unicode so the regex below fires
+            // even when the feed encodes quotes as &ldquo; / &rdquo; etc.
+            const textPart = part
+                .replace(/&ldquo;|&#8220;|&#x201[Cc];/g, '\u201c')
+                .replace(/&rdquo;|&#8221;|&#x201[Dd];/g, '\u201d')
+                .replace(/&lsquo;|&#8216;|&#x2018;/g,    '\u2018')
+                .replace(/&rsquo;|&#8217;|&#x2019;/g,    '\u2019');
             // Split on smart-quoted spans (\u201c…\u201d or \u2018…\u2019)
-            const segs = part.split(/([\u201c\u2018][^\u201c\u2018\u201d\u2019]+?[\u201d\u2019])/u);
+            const segs = textPart.split(/([\u201c\u2018][^\u201c\u2018\u201d\u2019]+?[\u201d\u2019])/u);
             return segs.map((seg, i) => {
                 if (i % 2 === 1) return seg; // quoted — leave as-is
                 return seg.trim() ? '<span class="greyed-text">' + seg + '</span>' : seg;
@@ -208,8 +236,13 @@ function renderEntry(entry) {
         } catch (_) {}
     }
 
+    // Build searchable text: feed name + headline + plain-text content
+    const _tmp = document.createElement('div');
+    _tmp.innerHTML = entry.content || '';
+    const searchData = `${entry.feed_name || ''} ${htmlDecode(title)} ${_tmp.textContent || ''}`;
+
     return `
-<div class="mb-3">
+<div class="mb-3" data-search="${escHtml(searchData)}">
     <div class="headline fw-semibold" data-target="a${id}">
         ${faviconImg}
         <span class="headline-text">
@@ -441,7 +474,48 @@ function searchOtherSources(button) {
     }
     window.open('https://www.google.com/search?q=' + encodeURIComponent(query), '_blank');
 }
+
+// -------- SEARCH --------
+function filterEntries(query) {
+    const q = query.trim().toLowerCase();
+    document.querySelectorAll('#feed-container > .mb-3').forEach(el => {
+        el.style.display = (!q || (el.dataset.search || '').toLowerCase().includes(q)) ? '' : 'none';
+    });
+    const lb = document.getElementById('load-more-btn');
+    if (lb) lb.style.display = q ? 'none' : '';
+}
+
+// -------- PULL-TO-REFRESH (iOS standalone) --------
+(function setupPullToRefresh() {
+    if (!window.navigator.standalone) return;
+    const ind = document.getElementById('ptr-indicator');
+    const H = 48, THRESHOLD = 72;
+    let startY = 0, active = false;
+
+    document.addEventListener('touchstart', e => {
+        if (window.scrollY === 0) { startY = e.touches[0].pageY; active = true; }
+    }, { passive: true });
+
+    document.addEventListener('touchmove', e => {
+        if (!active) return;
+        const dy = e.touches[0].pageY - startY;
+        if (dy <= 0) { active = false; ind.style.transform = `translateY(-${H}px)`; return; }
+        const pct = Math.min(dy / THRESHOLD, 1);
+        ind.style.transform = `translateY(${(pct - 1) * H}px)`;
+        ind.textContent = dy >= THRESHOLD ? 'Release to refresh' : 'Pull down to refresh';
+    }, { passive: true });
+
+    document.addEventListener('touchend', e => {
+        if (!active) return;
+        active = false;
+        const dy = e.changedTouches[0].pageY - startY;
+        ind.style.transform = `translateY(-${H}px)`;
+        if (dy >= THRESHOLD) { ind.textContent = 'Refreshing\u2026'; location.reload(); }
+    });
+})();
 </script>
+
+<div id="ptr-indicator" aria-hidden="true">Pull down to refresh</div>
 
 </body>
 </html>
