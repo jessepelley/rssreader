@@ -1,29 +1,27 @@
 <?php
-// -------- CORS / ORIGIN CHECK --------
-// Only respond to requests from the GitHub Pages front-end.
+// -------- CORS --------
+// Set first — ensures the header is present on every response (200, 403, 500, etc.).
+// Without it, Safari throws a generic TypeError and the browser shows no console detail.
 $allowed_origin = 'https://news.jjjp.ca';
-$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+header("Access-Control-Allow-Origin: $allowed_origin");
 
 // Handle browser preflight (OPTIONS)
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    if ($origin === $allowed_origin) {
-        header("Access-Control-Allow-Origin: $allowed_origin");
-        header('Access-Control-Allow-Methods: GET, OPTIONS');
-        header('Access-Control-Max-Age: 86400');
-    }
+    header('Access-Control-Allow-Methods: GET, OPTIONS');
+    header('Access-Control-Max-Age: 86400');
     http_response_code(204);
     exit;
 }
 
 header('Content-Type: application/json');
 
+// Reject requests from other origins
+$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
 if ($origin !== $allowed_origin) {
     http_response_code(403);
     echo json_encode(['error' => 'Forbidden']);
     exit;
 }
-
-header("Access-Control-Allow-Origin: $allowed_origin");
 
 // -------- CONFIGURATION --------
 $DB_FILE   = '/volume3/web/jjjp.ca/news/data/users/Jesse/db.sqlite';
