@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>RSS Reader</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
+<link rel="shortcut icon" href="favicon.ico">
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+<link rel="manifest" href="site.webmanifest">
+
+<style>
+.headline {
+    cursor: pointer;
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    line-height: 1.3;
+}
+
+.favicon {
+    width: 16px;
+    height: 16px;
+    margin-top: 2px;
+    flex-shrink: 0;
+}
+
+.headline-text {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: block;
+    width: 100%;
+}
+
+.feed-name {
+    margin-right: 4px;
+}
+
+.article {
+    display: none;
+}
+
+.article img figure {
+    max-width: 100%;
+    height: auto;
+}
+
+.article-date {
+    font-size: 0.85rem;
+    color: #666;
+}
+
+.article-content img, .article-content {
+    margin-bottom: 1rem;
+    margin-top: 1rem;
+}
+
+@media (max-width: 840px) {
+    .feed-name {
+        display: none;
+    }
+}
+
+.article-content p {
+    line-height: 1.6;
+}
+
+.article-content p q,
+.article-content .inline-quote-block {
+    background-color: #cce5ff;
+    font-weight: 450;
+    border-radius: 0.3rem;
+}
+
+.greyed-text {
+    color: #999;
+}
+
+.article-content .greyed-text a:link,
+.article-content .greyed-text a:visited,
+.article-content .greyed-text a:hover,
+.article-content .greyed-text a:active {
+    color: #0d6efd;
+    text-decoration: underline;
+}
+</style>
+</head>
+
+<body class="bg-white">
+
+<nav class="navbar navbar-light border-bottom mb-3 position-sticky" style="top: 0; background-color: #fff; z-index: 1000;">
+    <div class="container d-flex justify-content-between align-items-center">
+        <a class="navbar-brand" href="/">RSS Reader</a>
+        <a class="nav-link px-2 text-body-secondary" href="https://jjjp.ca/">Home</a>
+    </div>
+</nav>
+
+<div class="container">
+    <div id="feed-container">
+        <p class="text-body-secondary">Loading&hellip;</p>
+    </div>
+</div>
+
+<footer class="py-4 px-4 text-center text-body-secondary small">
+    <p class="mb-0" id="footer-text"></p>
+</footer>
+
+<script>
+// -------- CONFIGURATION --------
+const API_BASE     = 'https://jjjp.ca/reader/api.php';
+const FAVICON_API  = 'https://jjjp.ca/reader/favicon.php';
+
+// Feeds whose favicons are bundled as static assets
+const BUNDLED_FAVICONS = {
+    'Reuters':           '16b6fed2.ico',
+    'Japan Times':       'japantimes.ico',
+    'Associated Press':  'apnews.ico',
+};
+
+// -------- FAVICON HELPER --------
+function faviconUrl(feedName, feedWebsite) {
+    if (BUNDLED_FAVICONS[feedName]) return BUNDLED_FAVICONS[feedName];
+    if (!feedWebsite) return '';
+    return FAVICON_API + '?url=' + encodeURIComponent(feedWebsite);
+}
+
+// -------- TITLE CLEANUP --------
+function cleanTitle(title, content) {
+    title = title.replace(/\s*-\s*Reuters\s*$/, '').replace(/\s*-\s*AP News\s*$/, '').trim();
+    if (!title || /^https?:\/\//i.test(title)) {
+        const tmp = document.createElement('div');
+        tmp.innerHTML = content;
+        title = (tmp.textContent || '').trim().substring(0, 100) + '\u2026';
+    }
+    return title;
+}
+
+// -------- CONTENT PROCESSING --------
+function processContent(content, feedName) {
+    // Add Bootstrap classes to inline images
+    content = content.replace(/<img(\s)/gi, '<img class="img-fluid rounded"$1');
+
+    // Strip trailing Reuters / AP News credit lines
+    content = content.replace(/[\s\u00A0]*Reuters/g, '');
+    content = content.replace(/[\s\u00A0]*AP News/g,  '');
+
+    if (feedName === 'Fox News') {
+        // Remove "CLICK HERE" promotional paragraphs
+        content = content.replace(/<p>[^<]*CLICK HERE[^<]*<\/p>/gi, '');
+
+        // Grey out non-quoted text while leaving smart-quoted segments normal.
+        // Split on HTML tags and anchor elements to avoid wrapping markup.
+        const parts = content.split(/(<a\b[^>]*>[\s\S]*?<\/a>|<[^>]+>)/);
+        const result = parts.map(part => {
+            if (part.startsWith('<')) return part; // HTML tag — pass through
+            // Split on smart-quoted spans (\u201c…\u201d or \u2018…\u2019)
+            const segs = part.split(/([\u201c\u2018][^\u201c\u2018\u201d\u2019]+?[\u201d\u2019])/u);
+            return segs.map((seg, i) => {
+                if (i % 2 === 1) return seg; // quoted — leave as-is
+                return seg.trim() ? '<span class="greyed-text">' + seg + '</span>' : seg;
+            }).join('');
+        });
+        content = result.join('');
+    }
+
+    return content;
+}
+
+// -------- RENDER A SINGLE ENTRY --------
+function renderEntry(entry) {
+    const id      = parseInt(entry.id, 10);
+    const title   = cleanTitle(entry.title || '', entry.content || '');
+    const favicon = faviconUrl(entry.feed_name, entry.feed_website);
+    const content = processContent(entry.content || '', entry.feed_name);
+
+    const date = entry.date
+        ? new Date(parseInt(entry.date, 10) * 1000).toLocaleString('en-CA', {
+              year: 'numeric', month: 'short', day: 'numeric',
+              hour: '2-digit', minute: '2-digit', hour12: false
+          })
+        : '';
+
+    const faviconImg = favicon
+        ? `<img class="favicon" src="${escHtml(favicon)}" alt="">`
+        : '';
+
+    const feedLabel = entry.feed_name
+        ? `<span class="feed-name">${escHtml(entry.feed_name)} &mdash;</span>`
+        : '';
+
+    // Enclosures
+    let enclosures = '';
+    if (entry.attributes) {
+        try {
+            const attr = JSON.parse(entry.attributes);
+            if (Array.isArray(attr.enclosures)) {
+                attr.enclosures.forEach(enc => {
+                    if (enc.url) {
+                        enclosures += `<p><img src="${escHtml(enc.url)}" class="img-fluid rounded"></p>`;
+                    }
+                });
+            }
+        } catch (_) {}
+    }
+
+    return `
+<div class="mb-3">
+    <div class="headline fw-semibold" data-target="a${id}">
+        ${faviconImg}
+        <span class="headline-text">
+            ${feedLabel}${escHtml(htmlDecode(title))}
+        </span>
+    </div>
+
+    <div class="article border rounded p-3 mt-2" id="a${id}">
+
+        <div class="headline-full fw-semibold">
+            ${faviconImg}
+            <a class="headline-text-full text-decoration-none"
+               href="${escHtml(entry.link || '')}" target="_blank" rel="noreferrer">
+                ${feedLabel}<span class="headline-only">${escHtml(htmlDecode(title))}</span>
+            </a>
+        </div>
+
+        ${date ? `<div class="article-date">${date}</div>` : ''}
+
+        <div class="article-content">
+            ${content}
+            ${enclosures}
+        </div>
+
+        <div class="text-end mt-2">
+            <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard(this)" title="Copy link">Copy</button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="shareArticle(this)" title="Share">Share</button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="searchOtherSources(this)" title="Find other coverage">Search</button>
+            <button class="btn btn-sm btn-outline-primary me-1" onclick="openArticle(this)" title="Open article">Open</button>
+        </div>
+
+    </div>
+</div>`;
+}
+
+// -------- STRING HELPERS --------
+function escHtml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function htmlDecode(str) {
+    const txt = document.createElement('textarea');
+    txt.innerHTML = str;
+    return txt.value;
+}
+
+// -------- ATTACH CLICK HANDLERS --------
+function attachHeadlineHandlers(container) {
+    container.querySelectorAll('.headline').forEach(headline => {
+        headline.addEventListener('click', function () {
+            const targetId = headline.getAttribute('data-target');
+            const article  = document.getElementById(targetId);
+            if (!article) return;
+
+            document.querySelectorAll('.article').forEach(a => {
+                if (a !== article) a.style.display = 'none';
+            });
+
+            const wasHidden = article.style.display !== 'block';
+            article.style.display = wasHidden ? 'block' : 'none';
+
+            if (wasHidden) {
+                const navbar = document.querySelector('.navbar');
+                const navbarHeight = navbar ? navbar.offsetHeight : 0;
+                setTimeout(() => {
+                    const pos = article.getBoundingClientRect().top + window.pageYOffset;
+                    window.scrollTo({ top: pos - navbarHeight - 10, behavior: 'smooth' });
+                }, 100);
+            }
+        });
+    });
+}
+
+// -------- LOAD MORE --------
+let lastDate = null;
+let lastId   = null;
+let loadingMore = false;
+
+function renderLoadMoreButton() {
+    const btn = document.createElement('div');
+    btn.id = 'load-more-btn';
+    btn.className = 'text-center my-4';
+    btn.innerHTML = '<button class="btn btn-outline-secondary" onclick="loadMore()">Load more</button>';
+    return btn;
+}
+
+async function loadMore() {
+    if (loadingMore || !lastDate || !lastId) return;
+    loadingMore = true;
+
+    const btn = document.getElementById('load-more-btn');
+    if (btn) btn.querySelector('button').textContent = 'Loading\u2026';
+
+    try {
+        const url = `${API_BASE}?action=more&last_date=${lastDate}&last_id=${lastId}`;
+        const res  = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        if (btn) btn.remove();
+
+        if (data.entries && data.entries.length > 0) {
+            const container = document.getElementById('feed-container');
+            const tmp = document.createElement('div');
+
+            const seenTitles = new Set();
+            data.entries.forEach(entry => {
+                const t = (entry.title || '').trim();
+                if (seenTitles.has(t)) return;
+                seenTitles.add(t);
+                tmp.insertAdjacentHTML('beforeend', renderEntry(entry));
+            });
+
+            attachHeadlineHandlers(tmp);
+
+            // Move children into container
+            while (tmp.firstChild) container.appendChild(tmp.firstChild);
+
+            // Update cursors
+            const last = data.entries[data.entries.length - 1];
+            lastDate = last.date;
+            lastId   = last.id;
+
+            // Show button again for next page
+            if (data.entries.length === 20) {
+                container.appendChild(renderLoadMoreButton());
+            }
+        }
+    } catch (err) {
+        console.error('Load more failed:', err);
+        if (btn) btn.querySelector('button').textContent = 'Retry';
+    } finally {
+        loadingMore = false;
+    }
+}
+
+// -------- INITIAL LOAD --------
+(async function init() {
+    const t0 = performance.now();
+    const container = document.getElementById('feed-container');
+
+    try {
+        const res  = await fetch(API_BASE);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        container.innerHTML = '';
+
+        if (!data.entries || data.entries.length === 0) {
+            container.innerHTML = '<p>No recent items found.</p>';
+            return;
+        }
+
+        const seenTitles = new Set();
+        const tmp = document.createElement('div');
+
+        data.entries.forEach(entry => {
+            const t = (entry.title || '').trim();
+            if (seenTitles.has(t)) return;
+            seenTitles.add(t);
+            tmp.insertAdjacentHTML('beforeend', renderEntry(entry));
+        });
+
+        attachHeadlineHandlers(tmp);
+        while (tmp.firstChild) container.appendChild(tmp.firstChild);
+
+        // Set up cursors for pagination
+        const last = data.entries[data.entries.length - 1];
+        lastDate = last.date;
+        lastId   = last.id;
+
+        // Show "Load more" if a full page was returned
+        if (data.entries.length >= 20) {
+            container.appendChild(renderLoadMoreButton());
+        }
+
+        const elapsed = ((performance.now() - t0) / 1000).toFixed(3);
+        document.getElementById('footer-text').textContent =
+            `${data.entries.length} items loaded in ${elapsed} seconds.`;
+
+    } catch (err) {
+        container.innerHTML = `<p class="text-danger">Failed to load feed: ${escHtml(err.message)}</p>`;
+        console.error(err);
+    }
+})();
+
+// -------- ARTICLE ACTIONS --------
+function copyToClipboard(button) {
+    const article = button.closest('.article');
+    const url     = article.querySelector('.headline-text-full').href;
+    navigator.clipboard.writeText(url).then(() => {
+        const orig = button.textContent;
+        button.textContent = 'Copied!';
+        setTimeout(() => { button.textContent = orig; }, 2000);
+    }).catch(err => console.error('Copy failed:', err));
+}
+
+function shareArticle(button) {
+    const article = button.closest('.article');
+    const url     = article.querySelector('.headline-text-full').href;
+    const title   = article.querySelector('.headline-only').textContent.trim();
+    if (navigator.share) {
+        navigator.share({ title, text: `"${title}"`, url })
+            .catch(err => console.log('Share cancelled', err));
+    } else {
+        copyToClipboard(button.previousElementSibling);
+    }
+}
+
+function openArticle(button) {
+    const article = button.closest('.article');
+    const url     = article.querySelector('.headline-text-full').href;
+    window.open(url, '_blank');
+}
+
+function searchOtherSources(button) {
+    const article  = button.closest('.article');
+    const headline = article.querySelector('.headline-only')?.textContent.trim();
+    const source   = article.querySelector('.source-name')?.textContent.trim();
+    if (!headline) return;
+    let query = headline;
+    if (source) {
+        const domain = source.toLowerCase().replace(/\s+/g, '') + '.com';
+        query += ' -site:' + domain;
+    }
+    window.open('https://www.google.com/search?q=' + encodeURIComponent(query), '_blank');
+}
+</script>
+
+</body>
+</html>
